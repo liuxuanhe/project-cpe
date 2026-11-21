@@ -39,3 +39,6 @@ userdata/home/root/www/
 
 
 .device-dump/
+
+# 本地固件备份、OTA 回滚包与运行日志
+backup/

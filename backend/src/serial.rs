@@ -4,9 +4,9 @@
  * @LastEditors: 1orz cloudorzi@gmail.com
  * @LastEditTime: 2025-12-13 12:46:14
  * @FilePath: /udx710-backend/backend/src/serial.rs
- * @Description: 
- * 
- * Copyright (c) 2025 by 1orz, All Rights Reserved. 
+ * @Description:
+ *
+ * Copyright (c) 2025 by 1orz, All Rights Reserved.
  */
 //! DBus/AT Command Serialization Module
 //!
@@ -14,6 +14,7 @@
 //! to prevent "org.ofono.Error.InProgress: Operation already in progress" errors.
 
 use std::future::Future;
+use std::time::Duration;
 use tokio::sync::Mutex;
 
 /// Global mutex to serialize DBus/AT operations
@@ -38,3 +39,20 @@ where
     f.await
 }
 
+/// Execute a future while holding the global DBus lock, with a timeout.
+///
+/// If the lock cannot be acquired or the future does not finish within
+/// `timeout`, the future is cancelled and the lock is released.
+pub async fn with_serial_timeout<T, F>(
+    timeout: Duration,
+    f: F,
+) -> Result<T, tokio::time::error::Elapsed>
+where
+    F: Future<Output = T>,
+{
+    tokio::time::timeout(timeout, async {
+        let _guard = DBUS_LOCK.lock().await;
+        f.await
+    })
+    .await
+}

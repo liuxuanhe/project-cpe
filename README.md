@@ -4,9 +4,208 @@
 
 基于 Rust + Axum + zbus 的 5G/LTE 调制解调器后端服务，通过 ofono D-Bus 接口控制。
 
+> 当前版本：**3.5.0**
+>
+> 对比基线：**3.4.0（commit `9402522`）**
+>
+> 目标架构：`aarch64-unknown-linux-musl`
+
 powered by Cursor Claude Opus 4.5 & Sonnet 4.5 & OpenAI GPT-5.1/5.2
 
 欢迎pr 和 issue 看到后会尽快处理。
+
+## 3.5.0 版本说明
+
+3.5.0 以 3.4.0（commit `9402522`）为基线，重点解决 UDX710 在射频模式切换、基站重选和数据重拨后的 IPv4 路由“假活”问题，并加固 OTA 安装与 Modem 操作超时。该版本不修改厂商基带固件，所有恢复逻辑均在后台服务层完成。
+
+### 问题背景
+
+在部分网络事件后，ofono 的 `ConnectionContext.Active` 仍为 `true`，但 Linux 侧 IPv4 默认路由可能完全缺失、指向旧网关，或只恢复 IPv6。此时传统 watchdog 看到 `Active=true` 不会触发恢复，表现为：
+
+- IPv6 可以访问；
+- IPv4 `ping` 返回 `Network is unreachable`；
+- Web 页面、App 和依赖 IPv4 的服务不可用。
+
+### 3.4.0 与 3.5.0 对比
+
+| 能力 | 3.4.0 | 3.5.0 |
+| --- | --- | --- |
+| IPv4 默认路由恢复 | 依赖 ofono/connman，模式切换后可能缺失 | NetGuard 每秒检查；事件后 10 秒内 250ms 快轮询；缺失或网关错误立即 `ip route replace` |
+| “假活”识别 | 主要看 `Active` 属性 | 真实 ICMP 探测 + 期望/实际网关校验 |
+| 数据恢复 | 单层 data watchdog | 路由修复 → 数据重拨 → CFUN 分级恢复 |
+| 操作超时 | 无统一上限 | 重拨 8s、CFUN 单步 5s、路由检查 5s |
+| 恢复竞争 | watchdog 与手动操作可能并发 | NetGuard 统一负责数据恢复；旧 watchdog 仅清理 iptables |
+| 手动关闭数据 | 可能被 watchdog 重新打开 | 进入 `paused_by_user`，不再自动拉起 |
+| 模式切换恢复 | 现场观测可能需要数十秒 | 目标 ≤15s；本机验证 1.4–4.7s |
+| OTA 覆盖运行中二进制 | 可能报 `Text file busy` | 临时文件 + `rename` 原子替换 |
+| 可观测性 | 无专门状态接口 | `GET /api/netguard/status` + 256KB 轮转日志 |
+| 探测目标 | 固定/单目标 | 主 `223.5.5.5` + 备 `119.29.29.29`，均可配置 |
+
+### 1. NetGuard 三层自愈
+
+#### RouteReconcile：路由快速修复
+
+- 读取 `/proc/net/route`，失败时回退到 `ip -4 route`。
+- 每秒检查默认路由；收到 ofono 事件或模式切换后，10 秒内切换到 250ms 快轮询。
+- 期望网关优先取 ofono `Settings.Gateway`；缺失时依次回退到 WAN scope-link 主机路由和 WAN 本地 IPv4 地址。
+- 路由缺失或网关不匹配时执行 `ip route replace default ...`，成功后增加 `route_repairs`，不进入冷却。
+
+#### DataReactivate：健康探测与数据重拨
+
+- 每 2 秒探测 `223.5.5.5` 和 `119.29.29.29`，任一成功即视为连通。
+- 连续失败 2 次触发修复；连续成功 3 次恢复 `healthy`。
+- 数据连接未激活时也会主动拉起，不再只处理“Active=true 但路由缺失”的场景。
+- 单次数据重拨预算 8 秒，避免长时间占用 D-Bus/AT 串行锁。
+
+#### RadioReset：协议栈重启
+
+- 仅在数据重拨连续失败 2 次、注册状态正常且注册已稳定 10 秒后触发。
+- 执行 `AT+CFUN=0` / `AT+CFUN=1`，单步超时 5 秒。
+- 10 分钟冷却，避免频繁重启协议栈。
+
+### 2. 事件驱动快速窗口
+
+以下操作成功后会立即安排 1 秒后的 reconcile：
+
+- `POST /api/data`
+- `POST /api/radio-mode`
+- `POST /api/band-lock`
+- `POST /api/cell-lock`
+- `POST /api/cell-lock/unlock-all`
+
+同时监听 ofono `ConnectionContext.PropertyChanged`，通过 `tokio::sync::Notify` 唤醒路由循环，不再依赖固定 40 秒延迟。
+
+### 3. 消除重复恢复竞争
+
+当 `network_guard.enabled=true`：
+
+- `data_connection_watchdog` 只保留 iptables 清理，不再激活数据连接。
+- 数据恢复统一由 NetGuard 负责，避免两个流程同时调用 `SetProperty("Active", true)`。
+
+### 4. 操作超时与防锁死
+
+- `serial::with_serial_timeout` 在全局 D-Bus/AT 锁上增加超时；超时后取消操作并释放锁。
+- `set_data_connection_with_timeout` 默认 8 秒。
+- `send_at_command_with_timeout` 默认 5 秒。
+- 路由检查外层 5 秒超时。
+
+这些限制用于避免串口/D-Bus 操作长时间阻塞，导致后续请求排队。
+
+### 5. 手动数据开关语义
+
+- `POST /api/data {"active": false}` 会设置 `manual_data_off=true`，状态进入 `paused_by_user`。
+- 自动激活暂停，直到用户显式设置 `{"active": true}` 或服务重启。
+- `GET /api/netguard/status` 中的 `manual_data_off` 可直接观察该状态。
+
+### 6. OTA 原子安装
+
+- 新二进制先写入 `/home/root/.udx710.new`，`chmod 755` 后通过 `rename` 覆盖 `/home/root/udx710`。
+- 前端先复制到 `/home/root/www.new`，再切换到 `/home/root/www`。
+- 运行中的旧进程继续持有旧 inode，避免覆盖正在执行的二进制时出现 `Text file busy`。
+- 保留旧版 loader hook 兼容逻辑。
+
+### 7. 可观测性
+
+- `GET /api/netguard/status` 返回状态机阶段、探测结果、路由修复次数、恢复耗时、CFUN 冷却和手动关闭状态。
+- `/mnt/data/netguard.log` 记录 `route_reconcile`、`data_reactivate`、`radio_reset` 等事件，默认 256KB 轮转。
+- 状态接口示例：
+
+```json
+{
+  "status": "ok",
+  "message": "Success",
+  "data": {
+    "enabled": true,
+    "state": "healthy",
+    "health": "ok",
+    "consecutive_failures": 0,
+    "consecutive_successes": 3,
+    "last_error": null,
+    "last_recovery_ms": 2152,
+    "route_repairs": 1,
+    "data_reactivate_attempts": 2,
+    "data_reactivate_successes": 2,
+    "cfun_last_triggered_at": null,
+    "cfun_in_cooldown": false,
+    "probe_targets": ["223.5.5.5", "119.29.29.29"],
+    "last_route_check_at": "2026-11-21T17:33:12Z",
+    "expected_gateway": "10.0.0.1",
+    "observed_gateway": "10.0.0.1",
+    "route_ok": true,
+    "manual_data_off": false
+  }
+}
+```
+
+### 8. 状态机
+
+| 状态 | 含义 |
+| --- | --- |
+| `initializing` | 服务启动中 |
+| `waiting_registration` | 等待网络注册 |
+| `waiting_data` | 已注册，等待数据接口获得 IPv4 |
+| `activating_data` | 正在激活数据连接 |
+| `data_inactive` | 数据连接未激活，等待重试 |
+| `probing` | 数据已激活，正在探测连通性 |
+| `healthy` | 探测成功，路由正常 |
+| `route_reconcile` | 正在修复默认路由 |
+| `route_reconcile_stalled` | 路由修复失败 |
+| `data_reactivate_stalled` | 数据重拨失败 |
+| `radio_reset_stalled` | CFUN 后仍未恢复 |
+| `paused_by_user` | 用户手动关闭数据，自动激活暂停 |
+
+### 9. 配置示例
+
+旧版 `config.json` 不包含 `network_guard` 时会自动使用默认值，不需要手动迁移。
+
+```json
+{
+  "network_guard": {
+    "enabled": true,
+    "probe_target": "223.5.5.5",
+    "probe_backup_target": "119.29.29.29",
+    "route_poll_ms": 1000,
+    "health_interval_ms": 2000,
+    "fast_window_ms": 10000,
+    "fast_poll_ms": 250,
+    "health_failure_threshold": 2,
+    "health_recovery_threshold": 3,
+    "data_reactivate_timeout_ms": 8000,
+    "cfun_step_timeout_ms": 5000,
+    "cfun_fail_threshold": 2,
+    "cfun_cooldown_secs": 600,
+    "log_path": "/mnt/data/netguard.log",
+    "log_max_kb": 256
+  }
+}
+```
+
+### 10. 现场验证
+
+以下为 UDX710 + 中国联通网络上的验证结果，仅代表该环境：
+
+| 场景 | 结果 |
+| --- | --- |
+| 重启后数据自动拉起 | 1.0–3.0 秒进入 `healthy` |
+| 删除默认路由 | 0.01 秒补回（connman 即时），NetGuard 同时记录修复 |
+| 写入错误网关 | 0.13–0.56 秒纠正 |
+| 切换 LTE-only | 1.4 秒恢复 |
+| 切回 5G/LTE auto | 4.7 秒恢复 |
+| 手动关闭数据 | 10 秒内保持关闭，自愈不抢跑 |
+| 重新打开数据 | 1.7 秒路由恢复，6.1 秒完全健康 |
+| ICMP 丢包 | `223.5.5.5` 20/20、0%；`119.29.29.29` 10/10、0% |
+| 模组温度 | 约 42.7–46.8°C |
+| CFUN | 未触发，冷却状态 `false` |
+
+### 11. 已知边界
+
+- 3.5.0 不修改厂商基带固件；如果后台服务未运行，厂商固件的路由缺陷仍可能出现。
+- CFUN 是最后手段，默认 10 分钟最多执行一次；频繁触发应检查信号、SIM、APN 和运营商状态。
+- `usb0` 的 `rx_errors` 是 RNDIS/USB gadget 统计，不等同于蜂窝链路丢包；排障应结合 WAN 接口统计和实际 `ping` 结果。
+- 部分 DNS 会屏蔽 ICMP，备用探测目标可按网络环境调整。
+- 路由修复依赖 Linux `ip` 命令和 root 权限，成品模组默认满足。
+
+---
 
 ## 免责声明
 
@@ -64,7 +263,7 @@ powered by Cursor Claude Opus 4.5 & Sonnet 4.5 & OpenAI GPT-5.1/5.2
 ### 构建前端
 
 ```bash
-cd frontend && npm run build
+cd frontend && pnpm install && pnpm run build
 ```
 
 ### 部署
@@ -72,6 +271,63 @@ cd frontend && npm run build
 ```bash
 ./scripts/deploy.sh
 ```
+
+### 打包 OTA
+
+```bash
+./scripts/pack-ota.sh
+```
+
+输出文件：`release/udx710-ota-<version>.tar.gz`
+
+---
+
+## 📁 项目结构
+
+| 目录 | 说明 |
+| --- | --- |
+| `backend/` | Rust + Axum 后端，包含 ofono D-Bus、NetGuard、OTA、短信与通话等模块 |
+| `frontend/` | React 前端管理界面 |
+| `scripts/` | 构建、部署、OTA 打包与网络恢复脚本 |
+| `bruno-api/` | Bruno API 调试集合 |
+| `release/` | 本地 OTA 产物目录（不纳入版本库） |
+
+---
+
+## 🔄 升级与回滚
+
+### 从 3.4.0 升级到 3.5.0
+
+1. 保留当前运行的 OTA 包，并记录 SHA256/MD5。
+2. 构建后端、前端并生成 OTA 包：
+
+```bash
+./scripts/build.sh
+cd frontend && pnpm install && pnpm run build && cd ..
+./scripts/pack-ota.sh
+```
+
+3. 通过 Web 管理页的 OTA 页面，或调用 `POST /api/ota/upload` 上传 `release/udx710-ota-3.5.0.tar.gz`。
+4. 调用 `POST /api/ota/apply`，或使用页面上的“安装并重启”。
+5. 重启后检查：
+
+```bash
+curl http://192.168.66.1/api/health
+curl http://192.168.66.1/api/netguard/status
+```
+
+### 回滚到上一版本
+
+优先使用 OTA 页面重新上传上一版本 OTA 包并安装。若后台服务无法启动，可在已确认备份完整的前提下，通过 ADB 恢复设备内保留的二进制和前端目录：
+
+```sh
+adb shell 'cp /home/root/udx710.3.4.0.bak /home/root/udx710'
+adb shell 'chmod 755 /home/root/udx710'
+adb shell 'rm -rf /home/root/www && cp -a /home/root/www.3.4.0.bak /home/root/www'
+adb shell 'sync && reboot'
+```
+
+> 回滚前请确认备份文件存在且校验通过，并保持设备供电稳定。`backup/`、`release/` 属于本地运维产物，不应提交到版本库。
 
 ---
 
@@ -275,6 +531,7 @@ AT+SPLBAND=2,0,0,0,0
 | `/api/stats` | GET | 系统统计（网速/内存/运行时间） |
 | `/api/stats/cpu` | GET | CPU 信息 |
 | `/api/connectivity` | GET | 网络连通性检查 |
+| `/api/netguard/status` | GET | NetGuard 状态机、路由、探测与恢复统计 |
 | `/api/system/reboot` | POST | 重启系统 |
 | `/api/at` | POST | 执行 AT 指令 |
 
@@ -321,6 +578,18 @@ pub struct ApiResponse<T> {
     pub data: Option<T>,
 }
 ```
+
+### 测试
+
+```bash
+# 后端单元测试
+cd backend && cargo test
+
+# 前端生产构建
+cd frontend && pnpm run build
+```
+
+NetGuard 的单元测试覆盖路由表解析、网关匹配、点对点 scope-link 网关推断、CFUN 触发条件和旧配置兼容性。
 
 ---
 

@@ -17,6 +17,7 @@ use zbus::Connection;
 
 use crate::config::ConfigManager;
 use crate::db::Database;
+use crate::netguard::NetguardHandle;
 use crate::sms_push::SmsPushSender;
 use crate::webhook::WebhookSender;
 
@@ -51,6 +52,7 @@ pub struct AppState {
     pub webhook_sender: Arc<WebhookSender>,
     pub sms_push_sender: Arc<SmsPushSender>,
     pub frontend_runtime: Arc<FrontendRuntime>,
+    pub netguard: NetguardHandle,
 }
 
 impl AppState {
@@ -61,6 +63,7 @@ impl AppState {
         webhook_sender: Arc<WebhookSender>,
         sms_push_sender: Arc<SmsPushSender>,
         frontend_runtime: Arc<FrontendRuntime>,
+        netguard: NetguardHandle,
     ) -> Self {
         Self {
             dbus_conn,
@@ -69,6 +72,7 @@ impl AppState {
             webhook_sender,
             sms_push_sender,
             frontend_runtime,
+            netguard,
         }
     }
 }
@@ -106,6 +110,12 @@ impl FromRef<AppState> for Arc<SmsPushSender> {
 impl FromRef<AppState> for Arc<FrontendRuntime> {
     fn from_ref(state: &AppState) -> Self {
         state.frontend_runtime.clone()
+    }
+}
+
+impl FromRef<AppState> for NetguardHandle {
+    fn from_ref(state: &AppState) -> Self {
+        state.netguard.clone()
     }
 }
 

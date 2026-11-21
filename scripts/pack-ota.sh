@@ -41,8 +41,8 @@ fi
 # 构建时间
 BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-# 目标架构
-ARCH="aarch64-unknown-linux-musl"
+# 目标架构（可用环境变量覆盖，例如 ARCH=aarch64-unknown-linux-gnu）
+ARCH="${ARCH:-aarch64-unknown-linux-musl}"
 
 # 检查构建产物
 BINARY_PATH="backend/target/aarch64-unknown-linux-musl/release/udx710"

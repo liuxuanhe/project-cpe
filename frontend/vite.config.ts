@@ -42,7 +42,8 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://192.168.66.1:3000',
+        // 成品模组上后端以 `udx710 -p 80` 运行，本地开发代理到 80 端口
+        target: 'http://192.168.66.1',
         changeOrigin: true,
       },
     },
