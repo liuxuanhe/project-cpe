@@ -241,17 +241,34 @@ pub fn apply_ota_update(restart_now: bool) -> Result<String, String> {
 
     let staging_binary = Path::new(OTA_STAGING_DIR).join("udx710");
     let staging_www = Path::new(OTA_STAGING_DIR).join("www");
+    let new_binary = Path::new("/home/root/.udx710.new");
+    let new_www = Path::new("/home/root/www.new");
+    let old_www = Path::new("/home/root/www.old");
 
-    fs::copy(&staging_binary, OTA_BINARY_PATH)
+    // Linux 不允许覆盖正在执行的 inode；先复制到同目录临时文件，
+    // 再用 rename 原子替换目录项，运行中的旧进程会继续使用旧 inode。
+    let _ = fs::remove_file(new_binary);
+    fs::copy(&staging_binary, new_binary)
         .map_err(|e| format!("Failed to copy binary: {}", e))?;
 
     Command::new("chmod")
-        .args(["755", OTA_BINARY_PATH])
+        .args(["755", new_binary.to_str().unwrap_or("")])
         .output()
         .map_err(|e| format!("Failed to chmod binary: {}", e))?;
 
-    let _ = fs::remove_dir_all(OTA_WWW_PATH);
-    copy_dir_recursive(staging_www.to_str().unwrap_or(""), OTA_WWW_PATH)?;
+    fs::rename(new_binary, OTA_BINARY_PATH)
+        .map_err(|e| format!("Failed to atomically replace binary: {}", e))?;
+
+    let _ = fs::remove_dir_all(new_www);
+    copy_dir_recursive(staging_www.to_str().unwrap_or(""), new_www.to_str().unwrap_or(""))?;
+    let _ = fs::remove_dir_all(old_www);
+    if Path::new(OTA_WWW_PATH).exists() {
+        fs::rename(OTA_WWW_PATH, old_www)
+            .map_err(|e| format!("Failed to move old www directory: {}", e))?;
+    }
+    fs::rename(new_www, OTA_WWW_PATH)
+        .map_err(|e| format!("Failed to activate new www directory: {}", e))?;
+    let _ = fs::remove_dir_all(old_www);
     fix_file_permissions("/home/root")?;
     crate::config::ensure_loader_hooks_init()?;
 

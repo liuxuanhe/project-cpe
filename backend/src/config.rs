@@ -4,9 +4,9 @@
  * @LastEditors: 1orz cloudorzi@gmail.com
  * @LastEditTime: 2025-12-13 12:45:58
  * @FilePath: /udx710-backend/backend/src/config.rs
- * @Description: 
- * 
- * Copyright (c) 2025 by 1orz, All Rights Reserved. 
+ * @Description:
+ *
+ * Copyright (c) 2025 by 1orz, All Rights Reserved.
  */
 //! 配置管理模块
 //!
@@ -38,11 +38,11 @@ pub struct WebhookConfig {
     #[serde(default)]
     pub headers: HashMap<String, String>,
     #[serde(default)]
-    pub secret: String,  // 可选的签名密钥
+    pub secret: String, // 可选的签名密钥
     #[serde(default = "default_sms_template")]
-    pub sms_template: String,  // 短信 payload 模板
+    pub sms_template: String, // 短信 payload 模板
     #[serde(default = "default_call_template")]
-    pub call_template: String,  // 通话 payload 模板
+    pub call_template: String, // 通话 payload 模板
 }
 
 /// 默认短信模板 (飞书机器人格式)
@@ -52,7 +52,8 @@ fn default_sms_template() -> String {
   "content": {
     "text": "📱 短信通知\n发送方: {{phone_number}}\n内容: {{content}}\n时间: {{timestamp}}"
   }
-}"#.to_string()
+}"#
+    .to_string()
 }
 
 /// 默认通话模板 (飞书机器人格式)
@@ -155,6 +156,192 @@ impl Default for RefreshConfig {
     }
 }
 
+/// 网络自愈配置
+///
+/// 定期做真实连通性探测，发现 IPv4 路由假活时自动恢复。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkGuardConfig {
+    #[serde(default = "default_guard_enabled")]
+    pub enabled: bool,
+    /// 探测间隔（秒）
+    #[serde(default = "default_guard_interval_secs")]
+    pub interval_secs: u64,
+    /// 连续失败多少次后触发修复
+    #[serde(default = "default_guard_failure_threshold")]
+    pub failure_threshold: u32,
+    /// 修复失败后的冷却时间（秒）
+    #[serde(default = "default_guard_cooldown_secs")]
+    pub cooldown_secs: u64,
+    /// IPv4 探测目标
+    #[serde(default = "default_guard_probe_target")]
+    pub probe_target: String,
+    /// 路由轮询间隔（毫秒）
+    #[serde(default = "default_route_poll_ms")]
+    pub route_poll_ms: u64,
+    /// 健康探测间隔（毫秒）
+    #[serde(default = "default_health_interval_ms")]
+    pub health_interval_ms: u64,
+    /// ofono 事件或模式切换后的快速窗口（毫秒）
+    #[serde(default = "default_fast_window_ms")]
+    pub fast_window_ms: u64,
+    /// 快速窗口内的路由轮询间隔（毫秒）
+    #[serde(default = "default_fast_poll_ms")]
+    pub fast_poll_ms: u64,
+    /// 健康判定所需的连续失败次数
+    #[serde(default = "default_health_failure_threshold")]
+    pub health_failure_threshold: u32,
+    /// 恢复健康所需的连续成功次数
+    #[serde(default = "default_health_recovery_threshold")]
+    pub health_recovery_threshold: u32,
+    /// 备用 IPv4 探测目标
+    #[serde(default = "default_probe_backup_target")]
+    pub probe_backup_target: String,
+    /// 数据重拨单次超时（毫秒）
+    #[serde(default = "default_data_reactivate_timeout_ms")]
+    pub data_reactivate_timeout_ms: u64,
+    /// AT+CFUN 单步超时（毫秒）
+    #[serde(default = "default_cfun_step_timeout_ms")]
+    pub cfun_step_timeout_ms: u64,
+    /// AT+CFUN 最小冷却时间（秒）
+    #[serde(default = "default_cfun_cooldown_secs")]
+    pub cfun_cooldown_secs: u64,
+    /// 触发 CFUN 前需连续数据重拨失败次数
+    #[serde(default = "default_cfun_fail_threshold")]
+    pub cfun_fail_threshold: u32,
+    /// netguard 日志路径
+    #[serde(default = "default_netguard_log_path")]
+    pub log_path: String,
+    /// netguard 日志的最大大小（KB）
+    #[serde(default = "default_netguard_log_max_kb")]
+    pub log_max_kb: u64,
+}
+
+fn default_guard_enabled() -> bool {
+    true
+}
+
+fn default_guard_interval_secs() -> u64 {
+    20
+}
+
+fn default_guard_failure_threshold() -> u32 {
+    2
+}
+
+fn default_guard_cooldown_secs() -> u64 {
+    300
+}
+
+fn default_guard_probe_target() -> String {
+    "223.5.5.5".to_string()
+}
+
+fn default_route_poll_ms() -> u64 {
+    1_000
+}
+
+fn default_health_interval_ms() -> u64 {
+    2_000
+}
+
+fn default_fast_window_ms() -> u64 {
+    10_000
+}
+
+fn default_fast_poll_ms() -> u64 {
+    250
+}
+
+fn default_health_failure_threshold() -> u32 {
+    2
+}
+
+fn default_health_recovery_threshold() -> u32 {
+    3
+}
+
+fn default_probe_backup_target() -> String {
+    "119.29.29.29".to_string()
+}
+
+fn default_data_reactivate_timeout_ms() -> u64 {
+    8_000
+}
+
+fn default_cfun_step_timeout_ms() -> u64 {
+    5_000
+}
+
+fn default_cfun_cooldown_secs() -> u64 {
+    600
+}
+
+fn default_cfun_fail_threshold() -> u32 {
+    2
+}
+
+fn default_netguard_log_path() -> String {
+    "/mnt/data/netguard.log".to_string()
+}
+
+fn default_netguard_log_max_kb() -> u64 {
+    256
+}
+
+impl Default for NetworkGuardConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_guard_enabled(),
+            interval_secs: default_guard_interval_secs(),
+            failure_threshold: default_guard_failure_threshold(),
+            cooldown_secs: default_guard_cooldown_secs(),
+            probe_target: default_guard_probe_target(),
+            route_poll_ms: default_route_poll_ms(),
+            health_interval_ms: default_health_interval_ms(),
+            fast_window_ms: default_fast_window_ms(),
+            fast_poll_ms: default_fast_poll_ms(),
+            health_failure_threshold: default_health_failure_threshold(),
+            health_recovery_threshold: default_health_recovery_threshold(),
+            probe_backup_target: default_probe_backup_target(),
+            data_reactivate_timeout_ms: default_data_reactivate_timeout_ms(),
+            cfun_step_timeout_ms: default_cfun_step_timeout_ms(),
+            cfun_cooldown_secs: default_cfun_cooldown_secs(),
+            cfun_fail_threshold: default_cfun_fail_threshold(),
+            log_path: default_netguard_log_path(),
+            log_max_kb: default_netguard_log_max_kb(),
+        }
+    }
+}
+
+impl NetworkGuardConfig {
+    pub fn sanitize(mut self) -> Self {
+        self.interval_secs = self.interval_secs.clamp(1, 300);
+        self.failure_threshold = self.failure_threshold.clamp(1, 10);
+        self.cooldown_secs = self.cooldown_secs.clamp(1, 3600);
+        if self.probe_target.trim().is_empty() {
+            self.probe_target = default_guard_probe_target();
+        }
+        self.route_poll_ms = self.route_poll_ms.clamp(100, 5_000);
+        self.health_interval_ms = self.health_interval_ms.clamp(500, 10_000);
+        self.fast_window_ms = self.fast_window_ms.clamp(0, 30_000);
+        self.fast_poll_ms = self.fast_poll_ms.clamp(50, 1_000);
+        self.health_failure_threshold = self.health_failure_threshold.clamp(1, 5);
+        self.health_recovery_threshold = self.health_recovery_threshold.clamp(1, 10);
+        if self.probe_backup_target.trim().is_empty() {
+            self.probe_backup_target = default_probe_backup_target();
+        }
+        self.data_reactivate_timeout_ms = self.data_reactivate_timeout_ms.clamp(3_000, 20_000);
+        self.cfun_step_timeout_ms = self.cfun_step_timeout_ms.clamp(1_000, 15_000);
+        self.cfun_cooldown_secs = self.cfun_cooldown_secs.clamp(60, 3_600);
+        self.cfun_fail_threshold = self.cfun_fail_threshold.clamp(1, 5);
+        if self.log_path.trim().is_empty() {
+            self.log_path = default_netguard_log_path();
+        }
+        self.log_max_kb = self.log_max_kb.clamp(64, 4_096);
+        self
+    }
+}
+
 impl RefreshConfig {
     pub fn sanitize(mut self) -> Self {
         self.interval_ms = sanitize_refresh_interval_ms(self.interval_ms);
@@ -202,8 +389,9 @@ pub struct AppConfig {
     pub sms_push: SmsPushConfig,
     #[serde(default)]
     pub refresh: RefreshConfig,
+    #[serde(default)]
+    pub network_guard: NetworkGuardConfig,
 }
-
 
 /// 配置管理器
 pub struct ConfigManager {
@@ -216,18 +404,16 @@ impl ConfigManager {
     pub fn new(config_path: PathBuf) -> Self {
         let config = if config_path.exists() {
             match fs::read_to_string(&config_path) {
-                Ok(content) => {
-                    match serde_json::from_str::<AppConfig>(&content) {
-                        Ok(cfg) => AppConfig {
-                            refresh: cfg.refresh.sanitize(),
-                            ..cfg
-                        },
-                        Err(e) => {
-                            warn!(error = %e, "Failed to parse config file, using defaults");
-                            AppConfig::default()
-                        }
+                Ok(content) => match serde_json::from_str::<AppConfig>(&content) {
+                    Ok(cfg) => AppConfig {
+                        refresh: cfg.refresh.sanitize(),
+                        ..cfg
+                    },
+                    Err(e) => {
+                        warn!(error = %e, "Failed to parse config file, using defaults");
+                        AppConfig::default()
                     }
-                }
+                },
                 Err(e) => {
                     warn!(error = %e, "Failed to read config file, using defaults");
                     AppConfig::default()
@@ -242,26 +428,26 @@ impl ConfigManager {
             config: Arc::new(RwLock::new(config)),
             config_path,
         };
-        
+
         // 保存默认配置（如果文件不存在）
         if !manager.config_path.exists() {
             let _ = manager.save();
         }
-        
+
         manager
     }
-    
+
     /// 获取当前配置
     #[allow(dead_code)]
     pub fn get(&self) -> AppConfig {
         self.config.read().unwrap().clone()
     }
-    
+
     /// 获取 Webhook 配置
     pub fn get_webhook(&self) -> WebhookConfig {
         self.config.read().unwrap().webhook.clone()
     }
-    
+
     /// 更新 Webhook 配置
     pub fn set_webhook(&self, webhook: WebhookConfig) -> Result<(), String> {
         {
@@ -287,6 +473,10 @@ impl ConfigManager {
         self.config.read().unwrap().refresh.clone().sanitize()
     }
 
+    pub fn get_network_guard(&self) -> NetworkGuardConfig {
+        self.config.read().unwrap().network_guard.clone().sanitize()
+    }
+
     pub fn set_refresh(&self, refresh: RefreshConfig) -> Result<(), String> {
         {
             let mut config = self.config.write().unwrap();
@@ -306,38 +496,38 @@ impl ConfigManager {
         }
         self.save()
     }
-    
+
     /// 保存配置到文件
     pub fn save(&self) -> Result<(), String> {
         let config = self.config.read().unwrap();
         let content = serde_json::to_string_pretty(&*config)
             .map_err(|e| format!("Failed to serialize config: {}", e))?;
-        
+
         // 确保目录存在
         if let Some(parent) = self.config_path.parent() {
             fs::create_dir_all(parent)
                 .map_err(|e| format!("Failed to create config directory: {}", e))?;
         }
-        
+
         fs::write(&self.config_path, content)
             .map_err(|e| format!("Failed to write config file: {}", e))?;
-        
+
         Ok(())
     }
-    
+
     /// 重新加载配置
     #[allow(dead_code)]
     pub fn reload(&self) -> Result<(), String> {
         if !self.config_path.exists() {
             return Err("Config file does not exist".to_string());
         }
-        
+
         let content = fs::read_to_string(&self.config_path)
             .map_err(|e| format!("Failed to read config file: {}", e))?;
-        
+
         let new_config: AppConfig = serde_json::from_str(&content)
             .map_err(|e| format!("Failed to parse config file: {}", e))?;
-        
+
         {
             let mut config = self.config.write().unwrap();
             *config = AppConfig {
@@ -345,7 +535,7 @@ impl ConfigManager {
                 ..new_config
             };
         }
-        
+
         Ok(())
     }
 }
@@ -412,7 +602,10 @@ fn remove_ota_command_from_loader(content: &str) -> String {
         .filter(|line| !is_ota_hook_line(line))
         .collect();
 
-    while filtered_lines.last().is_some_and(|line| line.trim().is_empty()) {
+    while filtered_lines
+        .last()
+        .is_some_and(|line| line.trim().is_empty())
+    {
         filtered_lines.pop();
     }
 
@@ -490,8 +683,7 @@ fn set_executable_permissions(path: &Path) -> Result<(), String> {
 pub fn ensure_loader_hooks_init() -> Result<(), String> {
     let loader_path = PathBuf::from(LOADER_SCRIPT_PATH);
     let current_content = if loader_path.exists() {
-        fs::read_to_string(&loader_path)
-            .map_err(|e| format!("Failed to read loader.sh: {}", e))?
+        fs::read_to_string(&loader_path).map_err(|e| format!("Failed to read loader.sh: {}", e))?
     } else {
         String::new()
     };
@@ -571,11 +763,8 @@ pub fn set_init_script(script: String) -> Result<crate::models::InitScriptRespon
 #[cfg(test)]
 mod tests {
     use super::{
-        append_init_command_to_loader,
-        loader_contains_init_command,
-        loader_contains_ota_command,
-        remove_ota_command_from_loader,
-        INIT_SCRIPT_LOADER_COMMAND,
+        append_init_command_to_loader, loader_contains_init_command, loader_contains_ota_command,
+        remove_ota_command_from_loader, NetworkGuardConfig, INIT_SCRIPT_LOADER_COMMAND,
     };
 
     #[test]
@@ -617,5 +806,25 @@ mod tests {
 
         assert!(!loader_contains_ota_command(&updated));
         assert!(updated.contains("/home/root/udx710 -p 80 &"));
+    }
+
+    #[test]
+    fn old_network_guard_config_gets_new_defaults() {
+        let json = r#"{
+            "enabled": true,
+            "interval_secs": 20,
+            "failure_threshold": 2,
+            "cooldown_secs": 300,
+            "probe_target": "223.5.5.5"
+        }"#;
+        let config: NetworkGuardConfig = serde_json::from_str(json).unwrap();
+        let config = config.sanitize();
+
+        assert_eq!(config.route_poll_ms, 1_000);
+        assert_eq!(config.health_interval_ms, 2_000);
+        assert_eq!(config.fast_poll_ms, 250);
+        assert_eq!(config.data_reactivate_timeout_ms, 8_000);
+        assert_eq!(config.cfun_step_timeout_ms, 5_000);
+        assert_eq!(config.log_path, "/mnt/data/netguard.log");
     }
 }

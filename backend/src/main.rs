@@ -4,9 +4,9 @@
  * @LastEditors: 1orz cloudorzi@gmail.com
  * @LastEditTime: 2025-12-13 12:46:08
  * @FilePath: /udx710-backend/backend/src/main.rs
- * @Description: 
- * 
- * Copyright (c) 2025 by 1orz, All Rights Reserved. 
+ * @Description:
+ *
+ * Copyright (c) 2025 by 1orz, All Rights Reserved.
  */
 //! Project CPE - UDX710 5G/LTE Module Management Service
 //!
@@ -21,17 +21,17 @@
 
 use anyhow::Result;
 use axum::{
-    routing::get, 
-    routing::post, 
-    Router,
-    response::{IntoResponse, Response},
-    http::{StatusCode, Uri},
     extract::DefaultBodyLimit,
+    http::{StatusCode, Uri},
+    response::{IntoResponse, Response},
+    routing::get,
+    routing::post,
+    Router,
 };
 use clap::Parser;
-use std::sync::Arc;
 use std::path::PathBuf;
-use tower_http::cors::{CorsLayer, Any};
+use std::sync::Arc;
+use tower_http::cors::{Any, CorsLayer};
 use tracing::{info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 use zbus::Connection;
@@ -42,19 +42,22 @@ mod dbus;
 mod handlers;
 mod iptables;
 mod models;
+mod netguard;
 mod ota;
 mod serial;
-mod sms_push;
 mod sms_listener;
+mod sms_push;
 mod state;
 mod usb_switch;
 mod utils;
 mod webhook;
 
-use config::{ensure_loader_hooks_init, get_default_config_path, get_persistent_root_dir, ConfigManager};
+use config::{
+    ensure_loader_hooks_init, get_default_config_path, get_persistent_root_dir, ConfigManager,
+};
+use db::Database;
 use dbus::init_data_connection;
 use handlers::*;
-use db::Database;
 use sms_push::SmsPushSender;
 use state::{AppState, FrontendRuntime};
 use webhook::WebhookSender;
@@ -62,13 +65,13 @@ use webhook::WebhookSender;
 /// 获取二进制文件同级目录下的 www 目录路径
 fn get_www_dir() -> PathBuf {
     // 获取当前可执行文件的路径
-    let exe_path = std::env::current_exe()
-        .expect("Failed to get executable path");
-    
+    let exe_path = std::env::current_exe().expect("Failed to get executable path");
+
     // 获取可执行文件所在目录
-    let exe_dir = exe_path.parent()
+    let exe_dir = exe_path
+        .parent()
         .expect("Failed to get executable directory");
-    
+
     // 拼接 www 目录
     exe_dir.join("www")
 }
@@ -76,26 +79,23 @@ fn get_www_dir() -> PathBuf {
 /// SPA fallback handler - 对于所有前端路由返回 index.html
 async fn spa_fallback(uri: Uri) -> Response {
     let path = uri.path();
-    
+
     // 如果是 API 路由，返回 404（不应该走到这里，但作为保险）
     if path.starts_with("/api/") {
         return (StatusCode::NOT_FOUND, "API endpoint not found").into_response();
     }
-    
+
     // 获取 www 目录的绝对路径
     let www_dir = get_www_dir();
-    
+
     // 构建请求文件的完整路径
     let requested_path = if path == "/" { "/index.html" } else { path };
     let file_path = www_dir.join(requested_path.trim_start_matches('/'));
-    
+
     // 如果文件存在，返回文件内容
     if let Ok(content) = tokio::fs::read(&file_path).await {
         // 根据文件扩展名设置正确的 Content-Type
-        let content_type = match file_path
-            .extension()
-            .and_then(|ext| ext.to_str())
-        {
+        let content_type = match file_path.extension().and_then(|ext| ext.to_str()) {
             Some("html") => "text/html; charset=utf-8",
             Some("css") => "text/css; charset=utf-8",
             Some("js") => "application/javascript; charset=utf-8",
@@ -107,26 +107,32 @@ async fn spa_fallback(uri: Uri) -> Response {
             Some("ico") => "image/x-icon",
             _ => "application/octet-stream",
         };
-        
+
         return (
             StatusCode::OK,
             [(axum::http::header::CONTENT_TYPE, content_type)],
-            content
-        ).into_response();
+            content,
+        )
+            .into_response();
     }
-    
+
     // 如果文件不存在，返回 index.html（SPA 路由）
     let index_path = www_dir.join("index.html");
     match tokio::fs::read(&index_path).await {
         Ok(content) => (
             StatusCode::OK,
             [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
-            content
-        ).into_response(),
+            content,
+        )
+            .into_response(),
         Err(_) => (
             StatusCode::NOT_FOUND,
-            format!("index.html not found at {:?}. Please build the frontend first.", index_path)
-        ).into_response(),
+            format!(
+                "index.html not found at {:?}. Please build the frontend first.",
+                index_path
+            ),
+        )
+            .into_response(),
     }
 }
 
@@ -159,7 +165,7 @@ async fn main() -> Result<()> {
 
     // Connect to system D-Bus
     let dbus_conn = Arc::new(Connection::system().await?);
-    
+
     // 创建 SMS 数据库（存储在可执行文件同级目录）
     let db_path = get_persistent_root_dir().join("data.db");
     if !db_path.exists() {
@@ -173,14 +179,18 @@ async fn main() -> Result<()> {
                     let _ = std::fs::create_dir_all(parent);
                 }
                 match std::fs::copy(&legacy_db_path, &db_path) {
-                    Ok(_) => info!(from = ?legacy_db_path, to = ?db_path, "Migrated legacy data.db"),
-                    Err(error) => warn!(error = %error, from = ?legacy_db_path, to = ?db_path, "Failed to migrate legacy data.db"),
+                    Ok(_) => {
+                        info!(from = ?legacy_db_path, to = ?db_path, "Migrated legacy data.db")
+                    }
+                    Err(error) => {
+                        warn!(error = %error, from = ?legacy_db_path, to = ?db_path, "Failed to migrate legacy data.db")
+                    }
                 }
             }
         }
     }
     let app_db = Arc::new(Database::new(db_path)?);
-    
+
     // 初始化配置管理器
     let config_path = get_default_config_path();
     info!(path = ?config_path, "Loading config");
@@ -189,12 +199,12 @@ async fn main() -> Result<()> {
     if let Err(err) = ensure_loader_hooks_init() {
         warn!(error = %err, "Failed to ensure loader bootstrap");
     }
-    
+
     // 初始化 Webhook 发送器
     let webhook_sender = Arc::new(WebhookSender::new(Arc::clone(&config_manager)));
     let sms_push_sender = Arc::new(SmsPushSender::new(Arc::clone(&config_manager)));
     let frontend_runtime = Arc::new(FrontendRuntime::new());
-    
+
     // 启动 SMS 监听线程
     {
         let conn_clone = Connection::system().await?;
@@ -202,10 +212,16 @@ async fn main() -> Result<()> {
         let webhook_clone = Arc::clone(&webhook_sender);
         let sms_push_clone = Arc::clone(&sms_push_sender);
         tokio::spawn(async move {
-            let _ = sms_listener::start_sms_listener(conn_clone, db_clone, webhook_clone, sms_push_clone).await;
+            let _ = sms_listener::start_sms_listener(
+                conn_clone,
+                db_clone,
+                webhook_clone,
+                sms_push_clone,
+            )
+            .await;
         });
     }
-    
+
     // 启动电话监听线程（包括通话记录存储）
     {
         let conn_clone = Connection::system().await?;
@@ -215,7 +231,7 @@ async fn main() -> Result<()> {
             let _ = sms_listener::start_call_listener(conn_clone, db_clone, webhook_clone).await;
         });
     }
-    
+
     // 自动初始化数据连接
     {
         let conn_clone = Arc::clone(&dbus_conn);
@@ -226,7 +242,7 @@ async fn main() -> Result<()> {
             tracing::info!(result = %result, "Auto-connect completed");
         });
     }
-    
+
     // 启动数据连接 Watchdog（每 15 秒检查一次）
     {
         let conn_clone = Arc::clone(&dbus_conn);
@@ -239,6 +255,10 @@ async fn main() -> Result<()> {
             dbus::data_connection_watchdog(conn_clone, config_manager, frontend_runtime).await;
         });
     }
+
+    // 启动网络自愈守护：真实探测 IPv4 连通性，路由假活时自动恢复
+    let netguard_handle =
+        netguard::NetguardHandle::spawn(Arc::clone(&dbus_conn), Arc::clone(&config_manager));
 
     // CORS 配置：允许前端开发服务器跨域访问
     let cors = CorsLayer::new()
@@ -254,6 +274,7 @@ async fn main() -> Result<()> {
         webhook_sender,
         sms_push_sender,
         frontend_runtime,
+        netguard_handle,
     );
 
     // Build routes - 使用统一的 AppState
@@ -262,82 +283,276 @@ async fn main() -> Result<()> {
         .route("/api/at", post(post_at_command).options(options_handler))
         // ========== 设备信息接口 ==========
         .route("/api/device", get(get_device_info).options(options_handler))
-        .route("/api/device/imeisv", get(get_imeisv_handler).options(options_handler))
+        .route(
+            "/api/device/imeisv",
+            get(get_imeisv_handler).options(options_handler),
+        )
         // ========== SIM 卡接口 ==========
         .route("/api/sim", get(get_sim_info).options(options_handler))
-        .route("/api/sim/slot", get(get_sim_slot_handler).options(options_handler))
-        .route("/api/sim/slot/switch", post(switch_sim_slot_handler).options(options_handler))
+        .route(
+            "/api/sim/slot",
+            get(get_sim_slot_handler).options(options_handler),
+        )
+        .route(
+            "/api/sim/slot/switch",
+            post(switch_sim_slot_handler).options(options_handler),
+        )
         // ========== 网络接口 ==========
-        .route("/api/network", get(get_network_info).options(options_handler))
-        .route("/api/network/interfaces", get(get_network_interfaces_info).options(options_handler))
-        .route("/api/network/signal-strength", get(get_signal_strength_handler).options(options_handler))
-        .route("/api/network/nitz", get(get_nitz_handler).options(options_handler))
-        .route("/api/network/operators", get(get_operators_handler).options(options_handler))
-        .route("/api/network/operators/scan", get(scan_operators_handler).options(options_handler))
-        .route("/api/network/register-manual", post(register_operator_manual_handler).options(options_handler))
-        .route("/api/network/register-auto", post(register_operator_auto_handler).options(options_handler))
+        .route(
+            "/api/network",
+            get(get_network_info).options(options_handler),
+        )
+        .route(
+            "/api/network/interfaces",
+            get(get_network_interfaces_info).options(options_handler),
+        )
+        .route(
+            "/api/network/signal-strength",
+            get(get_signal_strength_handler).options(options_handler),
+        )
+        .route(
+            "/api/network/nitz",
+            get(get_nitz_handler).options(options_handler),
+        )
+        .route(
+            "/api/network/operators",
+            get(get_operators_handler).options(options_handler),
+        )
+        .route(
+            "/api/network/operators/scan",
+            get(scan_operators_handler).options(options_handler),
+        )
+        .route(
+            "/api/network/register-manual",
+            post(register_operator_manual_handler).options(options_handler),
+        )
+        .route(
+            "/api/network/register-auto",
+            post(register_operator_auto_handler).options(options_handler),
+        )
         // ========== 小区信息接口 ==========
         .route("/api/cells", get(get_cells).options(options_handler))
-        .route("/api/location/cell-info", get(get_cell_location_info).options(options_handler))
+        .route(
+            "/api/location/cell-info",
+            get(get_cell_location_info).options(options_handler),
+        )
         // ========== QoS 接口 ==========
         .route("/api/qos", get(get_qos_info).options(options_handler))
         // ========== 数据连接接口 ==========
-        .route("/api/data", get(get_data_status).post(set_data_status).options(options_handler))
-        .route("/api/roaming", get(get_roaming_status_handler).post(set_roaming_status_handler).options(options_handler))
-        .route("/api/airplane-mode", get(get_airplane_mode_handler).post(set_airplane_mode_handler).options(options_handler))
+        .route(
+            "/api/data",
+            get(get_data_status)
+                .post(set_data_status)
+                .options(options_handler),
+        )
+        .route(
+            "/api/roaming",
+            get(get_roaming_status_handler)
+                .post(set_roaming_status_handler)
+                .options(options_handler),
+        )
+        .route(
+            "/api/airplane-mode",
+            get(get_airplane_mode_handler)
+                .post(set_airplane_mode_handler)
+                .options(options_handler),
+        )
         // ========== 射频模式接口 ==========
-        .route("/api/radio-mode", get(get_radio_mode_handler).post(set_radio_mode_handler).options(options_handler))
-        .route("/api/band-lock", get(get_band_lock_handler).post(set_band_lock_handler).options(options_handler))
-        .route("/api/cell-lock", get(get_cell_lock_handler).post(set_cell_lock_handler).options(options_handler))
-        .route("/api/cell-lock/unlock-all", post(unlock_all_cells_handler).options(options_handler))
+        .route(
+            "/api/radio-mode",
+            get(get_radio_mode_handler)
+                .post(set_radio_mode_handler)
+                .options(options_handler),
+        )
+        .route(
+            "/api/band-lock",
+            get(get_band_lock_handler)
+                .post(set_band_lock_handler)
+                .options(options_handler),
+        )
+        .route(
+            "/api/cell-lock",
+            get(get_cell_lock_handler)
+                .post(set_cell_lock_handler)
+                .options(options_handler),
+        )
+        .route(
+            "/api/cell-lock/unlock-all",
+            post(unlock_all_cells_handler).options(options_handler),
+        )
         // ========== APN 管理接口 ==========
-        .route("/api/apn", get(get_apn_list_handler).post(set_apn_handler).options(options_handler))
+        .route(
+            "/api/apn",
+            get(get_apn_list_handler)
+                .post(set_apn_handler)
+                .options(options_handler),
+        )
         // ========== 电话功能接口 ==========
-        .route("/api/calls", get(get_calls_handler).options(options_handler))
-        .route("/api/call/dial", post(dial_call_handler).options(options_handler))
-        .route("/api/call/hangup", post(hangup_call_handler).options(options_handler))
-        .route("/api/call/hangup-all", post(hangup_all_calls_handler).options(options_handler))
-        .route("/api/call/answer", post(answer_call_handler).options(options_handler))
-        .route("/api/call/volume", get(get_call_volume_handler).post(set_call_volume_handler).options(options_handler))
-        .route("/api/call/forwarding", get(get_call_forwarding_handler).post(set_call_forwarding_handler).options(options_handler))
-        .route("/api/call/settings", get(get_call_settings_handler).post(set_call_settings_handler).options(options_handler))
-        .route("/api/call/history", get(get_call_history_handler).options(options_handler))
-        .route("/api/call/history/{id}", axum::routing::delete(delete_call_history_handler).options(options_handler))
-        .route("/api/call/history/clear", post(clear_call_history_handler).options(options_handler))
+        .route(
+            "/api/calls",
+            get(get_calls_handler).options(options_handler),
+        )
+        .route(
+            "/api/call/dial",
+            post(dial_call_handler).options(options_handler),
+        )
+        .route(
+            "/api/call/hangup",
+            post(hangup_call_handler).options(options_handler),
+        )
+        .route(
+            "/api/call/hangup-all",
+            post(hangup_all_calls_handler).options(options_handler),
+        )
+        .route(
+            "/api/call/answer",
+            post(answer_call_handler).options(options_handler),
+        )
+        .route(
+            "/api/call/volume",
+            get(get_call_volume_handler)
+                .post(set_call_volume_handler)
+                .options(options_handler),
+        )
+        .route(
+            "/api/call/forwarding",
+            get(get_call_forwarding_handler)
+                .post(set_call_forwarding_handler)
+                .options(options_handler),
+        )
+        .route(
+            "/api/call/settings",
+            get(get_call_settings_handler)
+                .post(set_call_settings_handler)
+                .options(options_handler),
+        )
+        .route(
+            "/api/call/history",
+            get(get_call_history_handler).options(options_handler),
+        )
+        .route(
+            "/api/call/history/{id}",
+            axum::routing::delete(delete_call_history_handler).options(options_handler),
+        )
+        .route(
+            "/api/call/history/clear",
+            post(clear_call_history_handler).options(options_handler),
+        )
         // ========== 短信功能接口 ==========
-        .route("/api/sms/send", post(send_sms_handler).options(options_handler))
-        .route("/api/sms/list", get(get_sms_list_handler).options(options_handler))
-        .route("/api/sms/conversation", get(get_sms_conversation_handler).options(options_handler))
-        .route("/api/sms/stats", get(get_sms_stats_handler).options(options_handler))
-        .route("/api/sms/clear", post(clear_sms_handler).options(options_handler))
+        .route(
+            "/api/sms/send",
+            post(send_sms_handler).options(options_handler),
+        )
+        .route(
+            "/api/sms/list",
+            get(get_sms_list_handler).options(options_handler),
+        )
+        .route(
+            "/api/sms/conversation",
+            get(get_sms_conversation_handler).options(options_handler),
+        )
+        .route(
+            "/api/sms/stats",
+            get(get_sms_stats_handler).options(options_handler),
+        )
+        .route(
+            "/api/sms/clear",
+            post(clear_sms_handler).options(options_handler),
+        )
         // ========== IMS/VoLTE 接口 ==========
-        .route("/api/ims/status", get(get_ims_status_handler).options(options_handler))
-        .route("/api/voicemail/status", get(get_voicemail_status_handler).options(options_handler))
+        .route(
+            "/api/ims/status",
+            get(get_ims_status_handler).options(options_handler),
+        )
+        .route(
+            "/api/voicemail/status",
+            get(get_voicemail_status_handler).options(options_handler),
+        )
         // ========== USB 模式接口 ==========
-        .route("/api/usb-mode", get(get_usb_mode).post(set_usb_mode).options(options_handler))
-        .route("/api/usb-advance", post(set_usb_mode_advanced).options(options_handler))
+        .route(
+            "/api/usb-mode",
+            get(get_usb_mode)
+                .post(set_usb_mode)
+                .options(options_handler),
+        )
+        .route(
+            "/api/usb-advance",
+            post(set_usb_mode_advanced).options(options_handler),
+        )
         // ========== 系统接口 ==========
         .route("/api/stats", get(get_system_stats).options(options_handler))
         .route("/api/stats/cpu", get(get_cpu_info).options(options_handler))
-        .route("/api/connectivity", get(get_connectivity_check).options(options_handler))
-        .route("/api/system/reboot", post(system_reboot).options(options_handler))
+        .route(
+            "/api/connectivity",
+            get(get_connectivity_check).options(options_handler),
+        )
+        .route(
+            "/api/netguard/status",
+            get(get_netguard_status_handler).options(options_handler),
+        )
+        .route(
+            "/api/system/reboot",
+            post(system_reboot).options(options_handler),
+        )
         .route("/api/health", get(health_check))
         // ========== init.sh 管理接口 ==========
-        .route("/api/init-script", get(get_init_script_handler).post(set_init_script_handler).options(options_handler))
+        .route(
+            "/api/init-script",
+            get(get_init_script_handler)
+                .post(set_init_script_handler)
+                .options(options_handler),
+        )
         // ========== Webhook 配置接口 ==========
-        .route("/api/webhook/config", get(get_webhook_config_handler).post(set_webhook_config_handler).options(options_handler))
-        .route("/api/webhook/test", post(test_webhook_handler).options(options_handler))
+        .route(
+            "/api/webhook/config",
+            get(get_webhook_config_handler)
+                .post(set_webhook_config_handler)
+                .options(options_handler),
+        )
+        .route(
+            "/api/webhook/test",
+            post(test_webhook_handler).options(options_handler),
+        )
         // ========== 短信推送配置接口 ==========
-        .route("/api/sms-push/config", get(get_sms_push_config_handler).post(set_sms_push_config_handler).options(options_handler))
-        .route("/api/sms-push/test", post(test_sms_push_handler).options(options_handler))
-        .route("/api/refresh/config", get(get_refresh_config_handler).post(set_refresh_config_handler).options(options_handler))
-        .route("/api/refresh/heartbeat", post(frontend_refresh_heartbeat_handler).options(options_handler))
+        .route(
+            "/api/sms-push/config",
+            get(get_sms_push_config_handler)
+                .post(set_sms_push_config_handler)
+                .options(options_handler),
+        )
+        .route(
+            "/api/sms-push/test",
+            post(test_sms_push_handler).options(options_handler),
+        )
+        .route(
+            "/api/refresh/config",
+            get(get_refresh_config_handler)
+                .post(set_refresh_config_handler)
+                .options(options_handler),
+        )
+        .route(
+            "/api/refresh/heartbeat",
+            post(frontend_refresh_heartbeat_handler).options(options_handler),
+        )
         // ========== OTA 更新接口 ==========
-        .route("/api/ota/status", get(get_ota_status_handler).options(options_handler))
-        .route("/api/ota/upload", post(upload_ota_handler).options(options_handler)
-            .layer(DefaultBodyLimit::max(50 * 1024 * 1024))) // 50MB 限制
-        .route("/api/ota/apply", post(apply_ota_handler).options(options_handler))
-        .route("/api/ota/cancel", post(cancel_ota_handler).options(options_handler))
+        .route(
+            "/api/ota/status",
+            get(get_ota_status_handler).options(options_handler),
+        )
+        .route(
+            "/api/ota/upload",
+            post(upload_ota_handler)
+                .options(options_handler)
+                .layer(DefaultBodyLimit::max(50 * 1024 * 1024)),
+        ) // 50MB 限制
+        .route(
+            "/api/ota/apply",
+            post(apply_ota_handler).options(options_handler),
+        )
+        .route(
+            "/api/ota/cancel",
+            post(cancel_ota_handler).options(options_handler),
+        )
         // ========== 统一状态和中间件 ==========
         .with_state(app_state)
         .layer(cors)
@@ -366,7 +581,7 @@ async fn main() -> Result<()> {
 /// 绑定端口，如果被占用则轮询等待
 async fn bind_with_retry(addr: &str, max_retries: u32) -> Result<tokio::net::TcpListener> {
     use std::time::Duration;
-    
+
     for i in 0..max_retries {
         match tokio::net::TcpListener::bind(addr).await {
             Ok(listener) => return Ok(listener),
